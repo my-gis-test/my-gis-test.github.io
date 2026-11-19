@@ -377,3 +377,11 @@ table.plain .num {
   font-variant-numeric: tabular-nums;
 }
 .score-sub { margin: 0.4rem 0 0.2rem; font-size: 1.1rem; }
+
+.radar svg {
+  display: block;
+  width: 100%;
+  max-width: 640px;
+  height: auto;
+  margin: 0 auto 0.75rem;
+}

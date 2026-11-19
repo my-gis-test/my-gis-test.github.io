@@ -181,9 +181,11 @@
     );
   }
 
-  function showResult(parts, failed) {
+  /** results: one entry per section, in test order: { title, area, weight, score } (score null if it failed). */
+  function showResult(results) {
     clearClock();
     bar.hidden = true;
+    const parts = results.filter((r) => r.score !== null);
     if (!parts.length) {
       screen(
         h('h1', { text: 'The test could not be scored' }),
@@ -191,6 +193,7 @@
       );
       return;
     }
+    const failed = results.length - parts.length;
     const lost = failed === 1 ? 'One section' : `${failed} sections`;
     screen(
       h('h1', { text: 'Test complete' }),
@@ -205,7 +208,82 @@
         text: 'Your GIS is the share of everyday reasoning challenges you can handle, at a set standard of difficulty and pace: 0 means none of them, 1 means all of them. This test estimates it from a fresh sample of such challenges, so another sitting may give a slightly different result.',
       }),
       failed ? h('p', { class: 'small', text: `${lost} could not run because of a technical problem, so the score is based on the rest.` }) : null,
+      h('h2', { text: 'Your profile' }),
+      h('p', { text: 'The shape reaches further toward the sections where you did better.' }),
+      h('div', { class: 'radar', html: radarSvg(results) }),
+      h(
+        'div',
+        { class: 'table-wrap' },
+        h(
+          'table',
+          { class: 'plain' },
+          h('thead', {}, h('tr', {}, ['Section', 'What it tests', 'Score'].map((text) => h('th', { text })))),
+          h(
+            'tbody',
+            {},
+            results.map((r) =>
+              h('tr', {}, h('td', { text: r.title }), h('td', { text: r.area }), h('td', { class: 'num', text: r.score === null ? '—' : U.fmt2(r.score) })),
+            ),
+          ),
+        ),
+      ),
+      h('p', {
+        class: 'muted small',
+        text: 'Each section rests on only a few questions or a minute or two of work, so section scores are rougher than the overall estimate.',
+      }),
       disclaimerBox(),
+    );
+  }
+
+  /** Radar chart: one spoke per section, 0 at the centre and 1 at the outer octagon. */
+  function radarSvg(results) {
+    const W = 640;
+    const H = 440;
+    const cx = W / 2;
+    const cy = H / 2;
+    const R = 150;
+    const n = results.length;
+    const at = (i, r) => {
+      const a = -Math.PI / 2 + (2 * Math.PI * i) / n;
+      return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+    };
+    const points = (radius) => results.map((_, i) => at(i, radius(i)).map((v) => v.toFixed(1)).join(',')).join(' ');
+    const rings = [0.25, 0.5, 0.75, 1]
+      .map((t) => `<polygon points="${points(() => R * t)}" fill="none" stroke="${t === 1 ? '#000' : '#cfcfcf'}"/>`)
+      .join('');
+    const spokes = results
+      .map((_, i) => {
+        const [x, y] = at(i, R);
+        return `<line x1="${cx}" y1="${cy}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="#cfcfcf"/>`;
+      })
+      .join('');
+    const value = (i) => R * (results[i].score || 0);
+    const shape = `<polygon points="${points(value)}" fill="#cfcfcf" stroke="#000" stroke-width="2" stroke-linejoin="round"/>`;
+    const dots = results
+      .map((_, i) => {
+        const [x, y] = at(i, value(i));
+        return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.5" fill="#000"/>`;
+      })
+      .join('');
+    const labels = results
+      .map((r, i) => {
+        const [x, y] = at(i, R + 14);
+        const dx = x - cx;
+        const anchor = Math.abs(dx) < 1 ? 'middle' : dx > 0 ? 'start' : 'end';
+        const dy = y - cy;
+        const top = dy < -R * 0.5 ? y - 22 : dy > R * 0.5 ? y + 10 : y - 4;
+        const score = r.score === null ? '—' : U.fmt2(r.score);
+        return (
+          `<text x="${x.toFixed(1)}" y="${top.toFixed(1)}" text-anchor="${anchor}">` +
+          `<tspan x="${x.toFixed(1)}" dy="0">${U.escapeHtml(r.title)}</tspan>` +
+          `<tspan x="${x.toFixed(1)}" dy="17" font-weight="bold">${score}</tspan></text>`
+        );
+      })
+      .join('');
+    const label = `Profile chart. ${results.map((r) => `${r.title}: ${r.score === null ? 'not scored' : U.fmt2(r.score)}`).join('; ')}.`;
+    return (
+      `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${U.escapeHtml(label)}" font-family="Times New Roman, Times, serif" font-size="15">` +
+      `${rings}${spokes}${shape}${dots}${labels}</svg>`
     );
   }
 
@@ -316,8 +394,7 @@
     window.addEventListener('beforeunload', confirmLeave);
 
     const total = defs.length;
-    const parts = [];
-    let failed = 0;
+    const results = [];
     let previous = null;
     for (const [i, def] of defs.entries()) {
       if (previous) await breakScreen(previous, i, total, def);
@@ -330,22 +407,23 @@
         }
         choice = await practiceDoneScreen(def, i, total);
       }
+      const result = { title: def.title, area: def.area, weight: def.weight, score: null };
+      results.push(result);
       try {
         const raw = await runPart(def, i, total, `${seed}/${def.id}`, def.run);
         const score = def.score(raw);
         if (!(score >= 0 && score <= 1)) throw new Error(`score() returned ${score}`);
-        parts.push({ weight: def.weight, score });
+        result.score = score;
         previous = { title: def.title, ok: true, timedOut: def.pace === 'fast' || Boolean(raw && raw.timedOut) };
       } catch (err) {
         // A broken section is left out and the remaining weights are renormalized.
         console.error(`GIS: section "${def.id}" failed`, err);
-        failed++;
         previous = { title: def.title, ok: false };
       }
     }
 
     window.removeEventListener('beforeunload', confirmLeave);
-    showResult(parts, failed);
+    showResult(results);
   }
 
   /** ?seed=… reproduces a session's items (for investigating problems); never shown to the taker. */
